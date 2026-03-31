@@ -1,0 +1,94 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'VERSION'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Setup Node
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      # Install deps (ci = reproductible, utilise package-lock.json)
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      # Tests unitaires (ChromeHeadless via CI=true dans karma.conf.js)
+      - name: Run unit tests
+        run: npm test -- --watch=false
+        env:
+          CI: true
+
+      # Build Angular production
+      - name: Build Angular app
+        run: npm run build -- --configuration production
+
+      # VERSION
+      - name: Read and bump version
+        id: version
+        run: |
+          if [ ! -f VERSION ]; then
+            echo "0.0.0" > VERSION
+          fi
+
+          VERSION=$(cat VERSION)
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          PATCH=$((PATCH + 1))
+
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          echo $NEW_VERSION > VERSION
+
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      # Commit VERSION
+      - name: Commit updated VERSION
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add VERSION
+          git commit -m "chore: bump version to ${{ steps.version.outputs.version }}" || echo "No changes"
+
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} HEAD:main
+
+      # Docker login
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build & Push
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/tracking-bo:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/tracking-bo:${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
