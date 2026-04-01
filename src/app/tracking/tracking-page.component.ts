@@ -14,7 +14,8 @@ import {
   TrackingService,
   TrajetDto,
   TrackingPoint,
-  TrackingError
+  TrackingError,
+  OptimalRoute
 } from './tracking.service';
 
 type WsStatus = 'connecting' | 'connected' | 'error' | 'disconnected';
@@ -179,17 +180,25 @@ type WsStatus = 'connecting' | 'connected' | 'error' | 'disconnected';
               </div>
               <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
                 <div class="text-2xl font-bold text-violet-600">{{ duration() }}</div>
-                <div class="text-xs text-gray-500 mt-0.5 font-medium">Durée</div>
+                <div class="text-xs text-gray-500 mt-0.5 font-medium">Durée réelle</div>
               </div>
-              <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-100 col-span-2 sm:col-span-2">
-                <div class="text-sm font-mono font-medium text-gray-500 truncate">{{ trajet()!.id }}</div>
-                <div class="text-xs text-gray-400 mt-0.5 font-medium">ID du trajet</div>
+              <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+                <div class="text-2xl font-bold text-purple-600">
+                  @if (routeDistanceKm() > 0) { {{ routeDistanceKm() }} km } @else { — }
+                </div>
+                <div class="text-xs text-gray-500 mt-0.5 font-medium">Distance prévue</div>
+              </div>
+              <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+                <div class="text-2xl font-bold text-indigo-600">
+                  @if (routeDurationMin() > 0) { {{ routeDurationMin() }} min } @else { — }
+                </div>
+                <div class="text-xs text-gray-500 mt-0.5 font-medium">Durée estimée</div>
               </div>
             </div>
 
             <!-- Map -->
-            @if (points().length > 0) {
-              <app-map [points]="points()" />
+            @if (points().length > 0 || plannedRoute().length > 0) {
+              <app-map [points]="points()" [plannedRoute]="plannedRoute()" />
             } @else {
               <div class="bg-white rounded-xl shadow-sm border border-gray-100 h-64 flex flex-col items-center justify-center gap-3 text-center px-6">
                 <div class="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center">
@@ -284,6 +293,9 @@ export class TrackingPageComponent implements OnInit, OnDestroy {
   loading = signal(false);
   error = signal<TrackingError | null>(null);
   wsStatus = signal<WsStatus>('disconnected');
+  plannedRoute = signal<[number, number][]>([]);
+  routeDistanceKm = signal<number>(0);
+  routeDurationMin = signal<number>(0);
 
   private subs: Subscription[] = [];
 
@@ -403,6 +415,9 @@ export class TrackingPageComponent implements OnInit, OnDestroy {
     this.points.set([]);
     this.trajet.set(null);
     this.wsStatus.set('disconnected');
+    this.plannedRoute.set([]);
+    this.routeDistanceKm.set(0);
+    this.routeDurationMin.set(0);
 
     // Step 1 — fetch trajet metadata
     const trajetSub = this.trackingService.getTrajet(shareToken).subscribe({
@@ -410,10 +425,13 @@ export class TrackingPageComponent implements OnInit, OnDestroy {
         this.trajet.set(trajet);
         this.loading.set(false);
 
-        // Step 2 — load history
+        // Step 2 — compute optimal route between departure and arrival
+        this.loadOptimalRoute(trajet);
+
+        // Step 3 — load history
         this.loadHistory(trajet.id);
 
-        // Step 3 — connect live
+        // Step 4 — connect live
         this.connectLive(trajet.id);
       },
       error: (err: { type: TrackingError }) => {
@@ -423,6 +441,26 @@ export class TrackingPageComponent implements OnInit, OnDestroy {
     });
 
     this.subs.push(trajetSub);
+  }
+
+  private loadOptimalRoute(trajet: TrajetDto): void {
+    const { departureLatitude, departureLongitude, arrivalLatitude, arrivalLongitude } = trajet;
+    if (!departureLatitude || !departureLongitude || !arrivalLatitude || !arrivalLongitude) return;
+
+    const routeSub = this.trackingService
+      .getOptimalRoute(departureLatitude, departureLongitude, arrivalLatitude, arrivalLongitude)
+      .subscribe({
+        next: (route: OptimalRoute) => {
+          // Fallback to straight line if OSRM returned nothing
+          const coords = route.coordinates.length > 0
+            ? route.coordinates
+            : [[departureLatitude, departureLongitude], [arrivalLatitude, arrivalLongitude]] as [number, number][];
+          this.plannedRoute.set(coords);
+          this.routeDistanceKm.set(Math.round(route.distanceMeters / 100) / 10);
+          this.routeDurationMin.set(Math.round(route.durationSeconds / 60));
+        }
+      });
+    this.subs.push(routeSub);
   }
 
   private loadHistory(trajetId: string): void {

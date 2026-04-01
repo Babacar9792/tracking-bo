@@ -19,11 +19,11 @@ import { TrackingPoint } from './tracking.service';
   standalone: true,
   imports: [CommonModule],
   template: `
-    <div class="relative rounded-xl overflow-hidden shadow-lg border border-gray-200">
+    <div class="relative rounded-xl shadow-lg border border-gray-200">
       <div #mapContainer class="map-container"></div>
 
       <!-- Legend -->
-      <div class="absolute top-3 left-3 z-10 flex gap-2">
+      <div class="absolute top-3 left-3 z-10 flex flex-wrap gap-2">
         <div class="bg-white/90 backdrop-blur-sm rounded-lg px-3 py-1.5 shadow-md flex items-center gap-2 text-sm font-medium text-gray-700">
           <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span>
           Départ
@@ -32,6 +32,12 @@ import { TrackingPoint } from './tracking.service';
           <span class="w-2.5 h-2.5 rounded-full bg-red-500 inline-block"></span>
           Arrivée
         </div>
+        @if (plannedRoute.length > 0) {
+          <div class="bg-white/90 backdrop-blur-sm rounded-lg px-3 py-1.5 shadow-md flex items-center gap-2 text-sm font-medium text-gray-700">
+            <svg width="20" height="4" viewBox="0 0 20 4"><line x1="0" y1="2" x2="20" y2="2" stroke="#8b5cf6" stroke-width="2.5" stroke-dasharray="6,4"/></svg>
+            Route prévue
+          </div>
+        }
       </div>
 
       <!-- Points count -->
@@ -48,6 +54,7 @@ import { TrackingPoint } from './tracking.service';
 export class MapComponent implements AfterViewInit, OnChanges, OnDestroy {
   @ViewChild('mapContainer') mapContainer!: ElementRef;
   @Input() points: TrackingPoint[] = [];
+  @Input() plannedRoute: [number, number][] = [];
 
   private map: L.Map | null = null;
   private polyline: L.Polyline | null = null;
@@ -56,11 +63,18 @@ export class MapComponent implements AfterViewInit, OnChanges, OnDestroy {
   private midMarkers: L.CircleMarker[] = [];
   private renderedCount = 0;
 
+  private plannedPolyline: L.Polyline | null = null;
+  private plannedDepartureMarker: L.Marker | null = null;
+  private plannedArrivalMarker: L.Marker | null = null;
+
   private readonly ngZone = inject(NgZone);
 
   ngAfterViewInit(): void {
     this.ngZone.runOutsideAngular(() => {
       this.initMap();
+      if (this.plannedRoute.length > 0) {
+        this.renderPlannedRoute();
+      }
       if (this.points.length > 0) {
         this.fullRender();
       }
@@ -68,23 +82,34 @@ export class MapComponent implements AfterViewInit, OnChanges, OnDestroy {
   }
 
   ngOnChanges(changes: SimpleChanges): void {
-    if (!changes['points'] || changes['points'].firstChange || !this.map) return;
+    if (!this.map) return;
 
-    const prev: TrackingPoint[] = changes['points'].previousValue ?? [];
-    const curr: TrackingPoint[] = changes['points'].currentValue ?? [];
+    if (changes['plannedRoute'] && !changes['plannedRoute'].firstChange) {
+      this.ngZone.runOutsideAngular(() => {
+        this.clearPlannedRoute();
+        if (this.plannedRoute.length > 0) {
+          this.renderPlannedRoute();
+        }
+      });
+    }
 
-    this.ngZone.runOutsideAngular(() => {
-      if (curr.length === 0) {
-        this.clearMap();
-      } else if (prev.length === 0 || curr.length < prev.length) {
-        // Full re-render (first load or reset)
-        this.clearMap();
-        this.fullRender();
-      } else if (curr.length > prev.length) {
-        // Incremental: only add new points
-        this.addIncrementalPoints(prev.length, curr);
-      }
-    });
+    if (changes['points'] && !changes['points'].firstChange) {
+      const prev: TrackingPoint[] = changes['points'].previousValue ?? [];
+      const curr: TrackingPoint[] = changes['points'].currentValue ?? [];
+
+      this.ngZone.runOutsideAngular(() => {
+        if (curr.length === 0) {
+          this.clearGpsLayers();
+        } else if (prev.length === 0 || curr.length < prev.length) {
+          // Full re-render (first load or reset)
+          this.clearGpsLayers();
+          this.fullRender();
+        } else if (curr.length > prev.length) {
+          // Incremental: only add new points
+          this.addIncrementalPoints(prev.length, curr);
+        }
+      });
+    }
   }
 
   ngOnDestroy(): void {
@@ -249,12 +274,54 @@ export class MapComponent implements AfterViewInit, OnChanges, OnDestroy {
     return points.map((p) => [p.latitude, p.longitude]);
   }
 
-  private clearMap(): void {
+  private clearGpsLayers(): void {
     this.midMarkers.forEach((m) => this.map?.removeLayer(m));
     this.midMarkers = [];
     if (this.startMarker) { this.map?.removeLayer(this.startMarker); this.startMarker = null; }
     if (this.endMarker) { this.map?.removeLayer(this.endMarker); this.endMarker = null; }
     if (this.polyline) { this.map?.removeLayer(this.polyline); this.polyline = null; }
     this.renderedCount = 0;
+  }
+
+  private renderPlannedRoute(): void {
+    if (!this.map || this.plannedRoute.length === 0) return;
+
+    this.plannedPolyline = L.polyline(this.plannedRoute, {
+      color: '#8b5cf6',
+      weight: 3,
+      opacity: 0.65,
+      dashArray: '10, 7'
+    }).addTo(this.map);
+
+    const dep = this.plannedRoute[0];
+    this.plannedDepartureMarker = this.createPlannedPinMarker(dep[0], dep[1], '#10b981', 'D', 'Départ prévu');
+
+    const arr = this.plannedRoute[this.plannedRoute.length - 1];
+    this.plannedArrivalMarker = this.createPlannedPinMarker(arr[0], arr[1], '#ef4444', 'A', 'Arrivée prévue');
+
+    // Fit to planned route only when no GPS track is displayed yet
+    if (this.points.length === 0) {
+      this.map.fitBounds(this.plannedPolyline.getBounds(), { padding: [40, 40] });
+    }
+  }
+
+  private createPlannedPinMarker(lat: number, lng: number, color: string, label: string, title: string): L.Marker {
+    return L.marker([lat, lng], {
+      icon: this.createPinIcon(color, label),
+      zIndexOffset: 500,
+      opacity: 0.8
+    })
+      .addTo(this.map!)
+      .bindPopup(`
+        <div style="font-family:system-ui,sans-serif;min-width:140px">
+          <div style="font-weight:700;color:#5b21b6;font-size:13px;margin-bottom:4px">${title}</div>
+          <div style="font-size:12px;color:#6b7280">${lat.toFixed(5)}, ${lng.toFixed(5)}</div>
+        </div>`);
+  }
+
+  private clearPlannedRoute(): void {
+    if (this.plannedPolyline) { this.map?.removeLayer(this.plannedPolyline); this.plannedPolyline = null; }
+    if (this.plannedDepartureMarker) { this.map?.removeLayer(this.plannedDepartureMarker); this.plannedDepartureMarker = null; }
+    if (this.plannedArrivalMarker) { this.map?.removeLayer(this.plannedArrivalMarker); this.plannedArrivalMarker = null; }
   }
 }

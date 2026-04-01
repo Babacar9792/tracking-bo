@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { Observable, throwError } from 'rxjs';
+import { Observable, throwError, of } from 'rxjs';
 import { catchError, map } from 'rxjs/operators';
 import { Client, IMessage } from '@stomp/stompjs';
 import { environment } from '../../environments/environment';
@@ -22,6 +22,16 @@ export interface TrajetDto {
   shareToken: string;
   createdAt: string;
   trackingUrl: string;
+  departureLatitude: number;
+  departureLongitude: number;
+  arrivalLatitude: number;
+  arrivalLongitude: number;
+}
+
+export interface OptimalRoute {
+  coordinates: [number, number][];
+  distanceMeters: number;
+  durationSeconds: number;
 }
 
 export type TrackingError = 'INVALID_TOKEN' | 'EXPIRED_TOKEN' | 'NETWORK_ERROR' | 'NOT_FOUND';
@@ -50,6 +60,23 @@ export class TrackingService {
         ),
         catchError((err: HttpErrorResponse) => this.handleError(err))
       );
+  }
+
+  getOptimalRoute(
+    fromLat: number, fromLng: number,
+    toLat: number, toLng: number
+  ): Observable<OptimalRoute> {
+    const url = `https://router.project-osrm.org/route/v1/driving/${fromLng},${fromLat};${toLng},${toLat}?overview=full&geometries=geojson`;
+    return this.http.get<any>(url).pipe(
+      map((res) => ({
+        coordinates: res.routes[0].geometry.coordinates.map(
+          (c: number[]) => [c[1], c[0]] as [number, number]
+        ),
+        distanceMeters: res.routes[0].distance,
+        durationSeconds: res.routes[0].duration
+      })),
+      catchError(() => of({ coordinates: [], distanceMeters: 0, durationSeconds: 0 }))
+    );
   }
 
   connectLive(trajetId: string): Observable<TrackingPoint> {

@@ -12,7 +12,11 @@ describe('TrackingService', () => {
     statut: 'STARTED',
     shareToken: 'bf48eacf-f58b-4707-8682-e1fd623ef3d2',
     createdAt: '2026-03-31T12:59:19.790836',
-    trackingUrl: 'http://localhost:4200/tracking/bf48eacf-f58b-4707-8682-e1fd623ef3d2'
+    trackingUrl: 'http://localhost:4200/tracking/bf48eacf-f58b-4707-8682-e1fd623ef3d2',
+    departureLatitude: 14.7167,
+    departureLongitude: -17.4677,
+    arrivalLatitude: 14.6928,
+    arrivalLongitude: -17.4467
   };
 
   const mockHistory: TrackingPoint[] = [
