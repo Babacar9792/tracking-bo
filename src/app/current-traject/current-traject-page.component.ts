@@ -269,12 +269,33 @@ export class CurrentTrajectPageComponent implements OnInit, AfterViewInit, OnDes
     this.livePoint.set(null);
     this.trajet.set(null);
     this.wsStatus.set('disconnected');
+    if (this.routePolyline) { this.map?.removeLayer(this.routePolyline); this.routePolyline = null; }
+    if (this.mobileMarker) { this.map?.removeLayer(this.mobileMarker); this.mobileMarker = null; }
+    if (this.arrivalMarker) { this.map?.removeLayer(this.arrivalMarker); this.arrivalMarker = null; }
+    this.lastRecalcAt = 0;
 
     const trajetSub = this.trackingService.getTrajet(shareToken).subscribe({
       next: (trajet) => {
         this.trajet.set(trajet);
         this.loading.set(false);
         this.ngZone.runOutsideAngular(() => this.renderArrivalMarker(trajet));
+
+        // Load history to get last known position immediately (don't wait for WS)
+        const historySub = this.trackingService.getHistory(trajet.id).subscribe({
+          next: (points) => {
+            if (points.length > 0) {
+              const lastPoint = points[points.length - 1];
+              this.livePoint.set(lastPoint);
+              this.ngZone.runOutsideAngular(() => {
+                this.updateMobileMarker(lastPoint);
+                this.recalcRouteFrom(lastPoint, true);
+              });
+            }
+          },
+          error: () => {} // non-blocking, WS will take over
+        });
+        this.subs.push(historySub);
+
         this.connectLive(trajet.id);
       },
       error: (err: { type: TrackingError }) => {
@@ -293,8 +314,10 @@ export class CurrentTrajectPageComponent implements OnInit, AfterViewInit, OnDes
       next: (point) => {
         this.wsStatus.set('connected');
         this.livePoint.set(point);
-        this.ngZone.runOutsideAngular(() => this.updateMobileMarker(point));
-        this.recalcRouteFrom(point);
+        this.ngZone.runOutsideAngular(() => {
+          this.updateMobileMarker(point);
+          this.recalcRouteFrom(point);
+        });
       },
       error: () => this.wsStatus.set('error')
     });
@@ -352,6 +375,8 @@ export class CurrentTrajectPageComponent implements OnInit, AfterViewInit, OnDes
   private renderRoute(coords: [number, number][]): void {
     if (!this.map) return;
 
+    const isFirstRender = !this.routePolyline;
+
     if (this.routePolyline) {
       this.routePolyline.setLatLngs(coords);
     } else {
@@ -364,8 +389,8 @@ export class CurrentTrajectPageComponent implements OnInit, AfterViewInit, OnDes
       }).addTo(this.map);
     }
 
-    // Fit bounds only on first render
-    if (coords.length > 1 && !this.mobileMarker) {
+    // Fit bounds on first render to show the full route
+    if (isFirstRender && coords.length > 1) {
       this.map.fitBounds(this.routePolyline.getBounds(), { padding: [60, 60] });
     }
   }
@@ -393,11 +418,6 @@ export class CurrentTrajectPageComponent implements OnInit, AfterViewInit, OnDes
     }
 
     this.map.panTo(latlng);
-
-    // On first point, calculate the route
-    if (!this.routePolyline) {
-      this.recalcRouteFrom(point, true);
-    }
   }
 
   private renderArrivalMarker(trajet: TrajetDto): void {
