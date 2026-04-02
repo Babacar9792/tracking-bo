@@ -1,4 +1,4 @@
 window.__env = {
-  apiBaseUrl: 'http://localhost:8083/api',
-  wsUrl: 'ws://localhost:8083/ws'
+  apiBaseUrl: 'https://tracking-api.jeuffsolution.com/api',
+  wsUrl: 'https://tracking-api.jeuffsolution.com/ws'
 };

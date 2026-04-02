@@ -182,7 +182,13 @@ type WsStatus = 'connecting' | 'connected' | 'error' | 'disconnected';
                 <div class="text-2xl font-bold text-violet-600">{{ duration() }}</div>
                 <div class="text-xs text-gray-500 mt-0.5 font-medium">Durée réelle</div>
               </div>
-              <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+              <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-100 relative overflow-hidden">
+                @if (isRecalculating()) {
+                  <div class="absolute inset-0 bg-amber-50 flex flex-col items-center justify-center gap-1">
+                    <div class="w-4 h-4 border-2 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
+                    <span class="text-xs text-amber-600 font-medium">Recalcul...</span>
+                  </div>
+                }
                 <div class="text-2xl font-bold text-purple-600">
                   @if (routeDistanceKm() > 0) { {{ routeDistanceKm() }} km } @else { — }
                 </div>
@@ -196,9 +202,56 @@ type WsStatus = 'connecting' | 'connected' | 'error' | 'disconnected';
               </div>
             </div>
 
+            <!-- Route recalculation banner -->
+            @if (isRecalculating()) {
+              <div class="bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 flex items-center gap-3">
+                <div class="w-4 h-4 border-2 border-amber-500 border-t-transparent rounded-full animate-spin flex-shrink-0"></div>
+                <div>
+                  <span class="text-amber-800 font-semibold text-sm">Déviation détectée</span>
+                  <span class="text-amber-600 text-sm ml-2">— Recalcul de l'itinéraire depuis la position actuelle...</span>
+                </div>
+              </div>
+            }
+
+            <!-- Live position card -->
+            @if (livePoint() && wsStatus() === 'connected') {
+              <div class="bg-blue-600 rounded-xl shadow-sm border border-blue-500 px-5 py-4 flex items-center justify-between gap-4">
+                <div class="flex items-center gap-3">
+                  <div class="relative flex-shrink-0 w-10 h-10">
+                    <span class="absolute inset-0 rounded-full bg-blue-400 opacity-50 animate-ping"></span>
+                    <span class="relative flex h-10 w-10 items-center justify-center rounded-full bg-blue-500">
+                      <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+                      </svg>
+                    </span>
+                  </div>
+                  <div>
+                    <div class="text-white font-semibold text-sm">Position en direct</div>
+                    <div class="text-blue-100 text-xs mt-0.5">
+                      Mis à jour à {{ formatTime(livePoint()!.timestamp) }}
+                    </div>
+                  </div>
+                </div>
+                <div class="flex gap-6 text-right">
+                  <div>
+                    <div class="text-blue-200 text-xs font-medium uppercase tracking-wider">Latitude</div>
+                    <div class="text-white font-mono font-semibold text-sm">{{ livePoint()!.latitude.toFixed(6) }}</div>
+                  </div>
+                  <div>
+                    <div class="text-blue-200 text-xs font-medium uppercase tracking-wider">Longitude</div>
+                    <div class="text-white font-mono font-semibold text-sm">{{ livePoint()!.longitude.toFixed(6) }}</div>
+                  </div>
+                </div>
+              </div>
+            }
+
             <!-- Map -->
             @if (points().length > 0 || plannedRoute().length > 0) {
-              <app-map [points]="points()" [plannedRoute]="plannedRoute()" />
+              <app-map [points]="points()" [plannedRoute]="plannedRoute()" [livePoint]="livePoint()" />
+            } @else if (livePoint()) {
+              <app-map [points]="points()" [plannedRoute]="plannedRoute()" [livePoint]="livePoint()" />
             } @else {
               <div class="bg-white rounded-xl shadow-sm border border-gray-100 h-64 flex flex-col items-center justify-center gap-3 text-center px-6">
                 <div class="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center">
@@ -243,7 +296,7 @@ type WsStatus = 'connecting' | 'connected' | 'error' | 'disconnected';
                         </tr>
                       </thead>
                       <tbody class="divide-y divide-gray-50">
-                        @for (point of points(); track point.id ?? point.timestamp; let i = $index) {
+                        @for (point of points(); track point.id || point.timestamp; let i = $index) {
                           <tr class="hover:bg-blue-50/50 transition-colors duration-100">
                             <td class="px-4 py-3">
                               <span class="text-xs font-mono text-gray-400">{{ i + 1 }}</span>
@@ -290,14 +343,19 @@ export class TrackingPageComponent implements OnInit, OnDestroy {
   shareToken = signal<string | null>(null);
   trajet = signal<TrajetDto | null>(null);
   points = signal<TrackingPoint[]>([]);
+  livePoint = signal<TrackingPoint | null>(null);
   loading = signal(false);
   error = signal<TrackingError | null>(null);
   wsStatus = signal<WsStatus>('disconnected');
   plannedRoute = signal<[number, number][]>([]);
   routeDistanceKm = signal<number>(0);
   routeDurationMin = signal<number>(0);
+  isRecalculating = signal(false);
 
   private subs: Subscription[] = [];
+  private readonly DEVIATION_THRESHOLD_M = 300;
+  private readonly RECALC_COOLDOWN_MS = 30_000;
+  private lastRecalcAt = 0;
 
   // --- Computed ---
 
@@ -415,6 +473,7 @@ export class TrackingPageComponent implements OnInit, OnDestroy {
     this.points.set([]);
     this.trajet.set(null);
     this.wsStatus.set('disconnected');
+    this.livePoint.set(null);
     this.plannedRoute.set([]);
     this.routeDistanceKm.set(0);
     this.routeDurationMin.set(0);
@@ -481,6 +540,7 @@ export class TrackingPageComponent implements OnInit, OnDestroy {
     const liveSub = this.trackingService.connectLive(trajetId).subscribe({
       next: (point) => {
         this.wsStatus.set('connected');
+        this.livePoint.set(point);
         // Avoid duplicates (live may replay last history point)
         const current = this.points();
         const isDuplicate = current.some(
@@ -489,6 +549,7 @@ export class TrackingPageComponent implements OnInit, OnDestroy {
         if (!isDuplicate) {
           this.points.set([...current, point]);
         }
+        this.checkAndRecalcRoute(point);
       },
       error: () => {
         this.wsStatus.set('error');
@@ -496,6 +557,66 @@ export class TrackingPageComponent implements OnInit, OnDestroy {
     });
 
     this.subs.push(liveSub);
+  }
+
+  // --- Route deviation ---
+
+  private checkAndRecalcRoute(point: TrackingPoint): void {
+    const route = this.plannedRoute();
+    const trajet = this.trajet();
+
+    if (
+      route.length < 2 ||
+      !trajet ||
+      this.isRecalculating() ||
+      Date.now() - this.lastRecalcAt < this.RECALC_COOLDOWN_MS
+    ) return;
+
+    const dist = this.minDistToRoute(point.latitude, point.longitude, route);
+    if (dist <= this.DEVIATION_THRESHOLD_M) return;
+
+    // Off route — recalculate from current position to arrival
+    this.isRecalculating.set(true);
+    this.lastRecalcAt = Date.now();
+
+    const recalcSub = this.trackingService
+      .getOptimalRoute(
+        point.latitude, point.longitude,
+        trajet.arrivalLatitude, trajet.arrivalLongitude
+      )
+      .subscribe({
+        next: (newRoute) => {
+          const coords = newRoute.coordinates.length > 0
+            ? newRoute.coordinates
+            : [[point.latitude, point.longitude], [trajet.arrivalLatitude, trajet.arrivalLongitude]] as [number, number][];
+          this.plannedRoute.set(coords);
+          this.routeDistanceKm.set(Math.round(newRoute.distanceMeters / 100) / 10);
+          this.routeDurationMin.set(Math.round(newRoute.durationSeconds / 60));
+          this.isRecalculating.set(false);
+        },
+        error: () => this.isRecalculating.set(false)
+      });
+
+    this.subs.push(recalcSub);
+  }
+
+  private minDistToRoute(lat: number, lng: number, route: [number, number][]): number {
+    let min = Infinity;
+    for (const [rlat, rlng] of route) {
+      const d = this.haversineM(lat, lng, rlat, rlng);
+      if (d < min) min = d;
+    }
+    return min;
+  }
+
+  private haversineM(lat1: number, lng1: number, lat2: number, lng2: number): number {
+    const R = 6371000;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
   // --- Helpers ---

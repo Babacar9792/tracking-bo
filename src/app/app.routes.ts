@@ -21,6 +21,13 @@ export const routes: Routes = [
       )
   },
   {
+    path: 'current-traject/:shareToken',
+    loadComponent: () =>
+      import('./current-traject/current-traject-page.component').then(
+        (m) => m.CurrentTrajectPageComponent
+      )
+  },
+  {
     path: '**',
     redirectTo: '/tracking'
   }

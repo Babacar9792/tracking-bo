@@ -1,9 +1,16 @@
-import { Injectable, inject } from '@angular/core';
+import { Injectable, inject, NgZone } from '@angular/core';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Observable, throwError, of } from 'rxjs';
 import { catchError, map } from 'rxjs/operators';
 import { Client, IMessage } from '@stomp/stompjs';
 import { environment } from '../../environments/environment';
+
+function sockJsWebSocketFactory(httpUrl: string): WebSocket {
+  const wsUrl = httpUrl.replace(/^https/, 'wss').replace(/^http/, 'ws');
+  const serverId = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+  const sessionId = Math.random().toString(36).slice(2, 10);
+  return new WebSocket(`${wsUrl}/${serverId}/${sessionId}/websocket`);
+}
 
 export interface TrackingPoint {
   id?: string;
@@ -39,6 +46,7 @@ export type TrackingError = 'INVALID_TOKEN' | 'EXPIRED_TOKEN' | 'NETWORK_ERROR' 
 @Injectable({ providedIn: 'root' })
 export class TrackingService {
   private readonly http = inject(HttpClient);
+  private readonly ngZone = inject(NgZone);
   private readonly apiBaseUrl = environment.apiBaseUrl;
   private readonly wsUrl = environment.wsUrl;
 
@@ -82,23 +90,25 @@ export class TrackingService {
   connectLive(trajetId: string): Observable<TrackingPoint> {
     return new Observable<TrackingPoint>((observer) => {
       const client = new Client({
-        brokerURL: this.wsUrl,
+        webSocketFactory: () => sockJsWebSocketFactory(this.wsUrl),
         reconnectDelay: 5000,
         onConnect: () => {
           client.subscribe(`/topic/trajet/${trajetId}`, (message: IMessage) => {
             try {
               const raw = JSON.parse(message.body);
-              observer.next({ ...raw, timestamp: new Date(raw.timestamp) });
+              this.ngZone.run(() => {
+                observer.next({ ...raw, timestamp: new Date(raw.timestamp) });
+              });
             } catch {
               // ignore malformed frames
             }
           });
         },
         onStompError: () => {
-          observer.error({ type: 'NETWORK_ERROR' as TrackingError });
+          this.ngZone.run(() => observer.error({ type: 'NETWORK_ERROR' as TrackingError }));
         },
         onWebSocketError: () => {
-          observer.error({ type: 'NETWORK_ERROR' as TrackingError });
+          this.ngZone.run(() => observer.error({ type: 'NETWORK_ERROR' as TrackingError }));
         }
       });
 

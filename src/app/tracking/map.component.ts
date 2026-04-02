@@ -38,6 +38,15 @@ import { TrackingPoint } from './tracking.service';
             Route prévue
           </div>
         }
+        @if (livePoint) {
+          <div class="bg-blue-600/90 backdrop-blur-sm rounded-lg px-3 py-1.5 shadow-md flex items-center gap-2 text-sm font-medium text-white">
+            <span class="relative flex h-2.5 w-2.5">
+              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-300 opacity-75"></span>
+              <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-white"></span>
+            </span>
+            En direct
+          </div>
+        }
       </div>
 
       <!-- Points count -->
@@ -55,6 +64,7 @@ export class MapComponent implements AfterViewInit, OnChanges, OnDestroy {
   @ViewChild('mapContainer') mapContainer!: ElementRef;
   @Input() points: TrackingPoint[] = [];
   @Input() plannedRoute: [number, number][] = [];
+  @Input() livePoint: TrackingPoint | null = null;
 
   private map: L.Map | null = null;
   private polyline: L.Polyline | null = null;
@@ -66,17 +76,22 @@ export class MapComponent implements AfterViewInit, OnChanges, OnDestroy {
   private plannedPolyline: L.Polyline | null = null;
   private plannedDepartureMarker: L.Marker | null = null;
   private plannedArrivalMarker: L.Marker | null = null;
+  private liveMarker: L.Marker | null = null;
 
   private readonly ngZone = inject(NgZone);
 
   ngAfterViewInit(): void {
     this.ngZone.runOutsideAngular(() => {
+      this.injectLiveMarkerStyles();
       this.initMap();
       if (this.plannedRoute.length > 0) {
         this.renderPlannedRoute();
       }
       if (this.points.length > 0) {
         this.fullRender();
+      }
+      if (this.livePoint) {
+        this.updateLiveMarker(this.livePoint);
       }
     });
   }
@@ -90,6 +105,14 @@ export class MapComponent implements AfterViewInit, OnChanges, OnDestroy {
         if (this.plannedRoute.length > 0) {
           this.renderPlannedRoute();
         }
+      });
+    }
+
+    if (changes['livePoint']) {
+      const pt: TrackingPoint | null = changes['livePoint'].currentValue;
+      this.ngZone.runOutsideAngular(() => {
+        if (pt) this.updateLiveMarker(pt);
+        else this.removeLiveMarker();
       });
     }
 
@@ -115,6 +138,87 @@ export class MapComponent implements AfterViewInit, OnChanges, OnDestroy {
   ngOnDestroy(): void {
     this.map?.remove();
     this.map = null;
+  }
+
+  private injectLiveMarkerStyles(): void {
+    if (document.getElementById('live-marker-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'live-marker-styles';
+    style.textContent = `
+      @keyframes liveRing {
+        0%   { transform: scale(1);   opacity: 0.7; }
+        100% { transform: scale(2.4); opacity: 0; }
+      }
+      .live-ring {
+        position: absolute; inset: 0;
+        border-radius: 50%;
+        background: rgba(59,130,246,0.45);
+        animation: liveRing 1.6s ease-out infinite;
+      }
+      .live-dot {
+        position: absolute; inset: 8px;
+        background: #2563eb;
+        border: 3px solid white;
+        border-radius: 50%;
+        box-shadow: 0 2px 10px rgba(37,99,235,0.6);
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  private updateLiveMarker(point: TrackingPoint): void {
+    if (!this.map) return;
+    const latlng: L.LatLngExpression = [point.latitude, point.longitude];
+
+    // Hide the static end marker — the live marker replaces it
+    if (this.endMarker) {
+      this.map.removeLayer(this.endMarker);
+      this.endMarker = null;
+    }
+
+    if (this.liveMarker) {
+      this.liveMarker.setLatLng(latlng);
+      this.liveMarker.setPopupContent(this.buildLivePopup(point));
+    } else {
+      const icon = L.divIcon({
+        className: '',
+        html: `<div style="position:relative;width:44px;height:44px">
+                 <div class="live-ring"></div>
+                 <div class="live-dot"></div>
+               </div>`,
+        iconSize: [44, 44],
+        iconAnchor: [22, 22],
+        popupAnchor: [0, -26]
+      });
+      this.liveMarker = L.marker(latlng, { icon, zIndexOffset: 2000 })
+        .addTo(this.map)
+        .bindPopup(this.buildLivePopup(point));
+    }
+    this.map.panTo(latlng);
+  }
+
+  private removeLiveMarker(): void {
+    if (this.liveMarker) {
+      this.map?.removeLayer(this.liveMarker);
+      this.liveMarker = null;
+    }
+  }
+
+  private buildLivePopup(point: TrackingPoint): string {
+    const d = new Date(point.timestamp);
+    const time = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return `
+      <div style="font-family:system-ui,sans-serif;min-width:160px">
+        <div style="font-weight:700;color:#1d4ed8;font-size:13px;margin-bottom:6px;display:flex;align-items:center;gap:6px">
+          <span style="display:inline-block;width:8px;height:8px;background:#22c55e;border-radius:50%"></span>
+          Position en direct
+        </div>
+        <div style="font-size:12px;color:#374151;line-height:1.6">
+          <div>Lat : <b>${point.latitude.toFixed(6)}</b></div>
+          <div>Lng : <b>${point.longitude.toFixed(6)}</b></div>
+          <div style="color:#6b7280;margin-top:2px">${time}</div>
+        </div>
+      </div>`;
   }
 
   private initMap(): void {
@@ -150,8 +254,8 @@ export class MapComponent implements AfterViewInit, OnChanges, OnDestroy {
     // Start marker
     this.startMarker = this.createPinMarker(this.points[0], '#10b981', 'D', 'Départ', 1);
 
-    // End marker (only if more than 1 point)
-    if (this.points.length > 1) {
+    // End marker — skip if live marker is active
+    if (this.points.length > 1 && !this.liveMarker) {
       this.endMarker = this.createPinMarker(
         this.points[this.points.length - 1],
         '#ef4444',
@@ -189,9 +293,11 @@ export class MapComponent implements AfterViewInit, OnChanges, OnDestroy {
       this.midMarkers.push(this.createMidMarker(newPoints[i], prevCount + i + 1));
     }
 
-    // New end marker
+    // New end marker — skip if live marker is active (it represents the current position)
     const lastPoint = curr[curr.length - 1];
-    this.endMarker = this.createPinMarker(lastPoint, '#ef4444', 'A', 'Arrivée', curr.length);
+    if (!this.liveMarker) {
+      this.endMarker = this.createPinMarker(lastPoint, '#ef4444', 'A', 'Arrivée', curr.length);
+    }
 
     // If start marker doesn't exist yet (was single point before), create it
     if (!this.startMarker) {
@@ -200,8 +306,10 @@ export class MapComponent implements AfterViewInit, OnChanges, OnDestroy {
 
     this.renderedCount = curr.length;
 
-    // Pan to latest point
-    this.map.panTo([lastPoint.latitude, lastPoint.longitude]);
+    // Pan only if no live marker (live marker already pans)
+    if (!this.liveMarker) {
+      this.map.panTo([lastPoint.latitude, lastPoint.longitude]);
+    }
   }
 
   private createMidMarker(point: TrackingPoint, index: number): L.CircleMarker {
