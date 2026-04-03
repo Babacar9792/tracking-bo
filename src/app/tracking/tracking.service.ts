@@ -5,12 +5,6 @@ import { catchError, map } from 'rxjs/operators';
 import { Client, IMessage } from '@stomp/stompjs';
 import { environment } from '../../environments/environment';
 
-function sockJsWebSocketFactory(httpUrl: string): WebSocket {
-  const wsUrl = httpUrl.replace(/^https/, 'wss').replace(/^http/, 'ws');
-  const serverId = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-  const sessionId = Math.random().toString(36).slice(2, 10);
-  return new WebSocket(`${wsUrl}/${serverId}/${sessionId}/websocket`);
-}
 
 export interface TrackingPoint {
   id?: string;
@@ -89,8 +83,9 @@ export class TrackingService {
 
   connectLive(trajetId: string): Observable<TrackingPoint> {
     return new Observable<TrackingPoint>((observer) => {
+      const brokerURL = this.wsUrl.replace(/^https/, 'wss').replace(/^http/, 'ws');
       const client = new Client({
-        webSocketFactory: () => sockJsWebSocketFactory(this.wsUrl),
+        brokerURL,
         reconnectDelay: 5000,
         onConnect: () => {
           client.subscribe(`/topic/trajet/${trajetId}`, (message: IMessage) => {
